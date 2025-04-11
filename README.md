@@ -18,7 +18,7 @@ This script removes some items from `oldfiles` in Neovim by modifing the Shada f
 
 # Install
 
-This is a small Python script that only uses the standard library, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-eraser.py) and run it.
+This is a small Python script that only uses the standard library, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-cleaner.py) and run it.
 
 # Usage
 
