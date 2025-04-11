@@ -66,7 +66,7 @@ def oldfiles_command(shada_path: Path) -> list[str]:
 
 
 def list_oldfiles(shada_path: Path):
-    run(oldfiles_command(shada_path))
+    run(oldfiles_command(shada_path), check=True)
 
 
 def get_oldfiles_from_fzf(shada_path: Path) -> list[bytes]:
@@ -99,7 +99,6 @@ def filter_oldfiles(
                 cur.append(line)
 
             elif line.startswith(b"  "):
-                assert cur is not None
                 cur.append(line)
             else:
                 if printcur:
