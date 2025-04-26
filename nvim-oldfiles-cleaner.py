@@ -5,10 +5,13 @@ import re
 import shutil
 import sys
 from argparse import ArgumentParser
+from dataclasses import dataclass
 from pathlib import Path
-from subprocess import run, Popen, PIPE
+from subprocess import PIPE, Popen, run
 from tempfile import NamedTemporaryFile
-from typing import Callable
+from typing import Any, BinaryIO, Callable, Iterator
+
+from msgpack import Unpacker, packb
 
 
 def get_shada_path() -> Path:
@@ -26,32 +29,6 @@ def get_shada_path() -> Path:
     )
 
     return Path(res.stdout.decode()) / "shada" / "main.shada"
-
-
-def shada_to_text(shada_path: Path, out_path: Path):
-    # Shada file is messagepack, but nvim can read it.
-    # So we convert it to text by changing the `filetype` of the buffer.
-    run(
-        [
-            "nvim",
-            "-Es",
-            "-c",
-            f"e {shada_path} | set ft=text | w! {out_path}",
-        ],
-        check=True,
-    )
-
-
-def text_to_shada(text_path: Path, out_path: Path):
-    run(
-        [
-            "nvim",
-            "-Es",
-            "-c",
-            f"e {text_path} | set ft=shada | w! {out_path}",
-        ],
-        check=True,
-    )
 
 
 def oldfiles_command(shada_path: Path) -> list[str]:
@@ -79,46 +56,66 @@ def get_oldfiles_from_fzf(shada_path: Path) -> list[bytes]:
     return output.splitlines()
 
 
-def filter_oldfiles(
-    path: Path, preds: list[Callable[[bytes], bool]]
-) -> tuple[Path, set[bytes]]:
-    FNH = b"  + f    file name"
-    tmp = NamedTemporaryFile(delete=False, prefix="nvim-oldfiles-cleaner.")
-    tmp.close()
-    os.chmod(tmp.name, 0o600)
-    deleted = set()
-    with path.open("rb") as fin, open(tmp.name, "wb") as fout:
-        cur = []
-        printcur = True
-        for line in fin:
-            if line.startswith(FNH):
-                fn = line.removeprefix(FNH).strip(b' "\n')
-                if any(pred(fn) for pred in preds):
-                    deleted.add(fn)
-                    printcur = False
-                cur.append(line)
+@dataclass
+class Entry:
+    typ: int
+    timestamp: int
+    length: int
+    data: Any
 
-            elif line.startswith(b"  "):
-                cur.append(line)
+    @classmethod
+    def from_iter(cls, unpacker: Iterator) -> "Entry | None":
+        try:
+            # SHADA_ENTRY_OBJECT_SEQUENCE from /usr/share/nvim/runtime/autoload/shada.vim
+            typ = next(unpacker)
+            timestamp = next(unpacker)
+            length: int = next(unpacker)
+            data = next(unpacker)
+            return Entry(typ, timestamp, length, data)
+        except StopIteration:
+            return None
+
+    def dump(self, fout: BinaryIO):
+        chunk: list[bytes] = []
+        for item in [self.typ, self.timestamp, self.length, self.data]:
+            if packed := packb(item):
+                chunk.append(packed)
             else:
-                if printcur:
-                    for c in cur:
-                        fout.write(c)
-                cur = [line]
-                printcur = True
-        if printcur:
-            for c in cur:
-                fout.write(c)
-    return (Path(tmp.name), deleted)
+                print(
+                    f"WARN: skipped some chunks: {self}",
+                    file=sys.stderr,
+                )
+                chunk = []
+                break
+        if chunk:
+            fout.write(b"".join(chunk))
+
+    def have_to_filter(self) -> bool:
+        # SHADA_ENTRY_NAMES from /usr/share/nvim/runtime/autoload/shada.vim
+        # 7: 'global_mark'
+        # 8: 'jump'
+        # 10: 'local_mark'
+        # 11: 'change'
+        return self.typ in [7, 8, 10, 11]
 
 
-def shada_to_tmp(shada_path: Path) -> Path:
-    tmp = NamedTemporaryFile(delete=False, prefix="nvim-oldfiles-cleaner.")
-    tmp.close()
-    os.chmod(tmp.name, 0o600)
-    tpath = Path(tmp.name)
-    shada_to_text(shada_path, tpath)
-    return tpath
+def filter_oldfiles(
+    fin: BinaryIO, fout: BinaryIO, preds: list[Callable[[bytes], bool]]
+) -> set[bytes]:
+    unpacker: Iterator = Unpacker(fin)
+    deleted = set()
+    while True:
+        entry = Entry.from_iter(unpacker)
+        if not entry:
+            break
+        if entry.have_to_filter():
+            # "f" is file name: SHADA_STANDARD_KEYS from /usr/share/nvim/runtime/autoload/shada.vim
+            file_name = entry.data["f"]
+            if any(pred(file_name) for pred in preds):
+                deleted.add(file_name)
+                continue
+        entry.dump(fout)
+    return deleted
 
 
 def argument_parser() -> ArgumentParser:
@@ -131,16 +128,13 @@ def argument_parser() -> ArgumentParser:
         help="delete oldfiles that do not exist in filesystem",
     )
     argp.add_argument(
+        "-y", "--yes", action="store_true", help="do not confirm before deleting"
+    )
+    argp.add_argument(
         "-f",
         "--fzf",
         action="store_true",
         help="delete oldfiles using fzf command. You can choose multiple items using TAB key.",
-    )
-    argp.add_argument(
-        "-y",
-        "--yes",
-        action="store_true",
-        help="do not confirm before deleting",
     )
     argp.add_argument(
         "PATTERNS",
@@ -171,31 +165,35 @@ def main():
         if not files:
             sys.exit()
         preds.append(lambda x: x in files)
-    tpath = shada_to_tmp(shada_path)
+    tmp = NamedTemporaryFile(delete=False, prefix="nvim-oldfiles-cleaner.")
+    tmp.close()
+    have_to_delete_tmp = True
     try:
-        filtered, deleted = filter_oldfiles(tpath, preds)
+        os.chmod(tmp.name, 0o600)  # this is the default permission of shada file
+        with shada_path.open("rb") as fin, open(tmp.name, "wb") as fout:
+            deleted = sorted(list(filter_oldfiles(fin, fout, preds)))
         if not deleted:
-            print("no item to delete")
+            print("Nothing to delete.")
             sys.exit()
-        elif not args.yes:
+        if args.yes:
+            for item in deleted:
+                print("Deleting: " + item.decode())
+        else:
             print("Items to delete:")
             for item in deleted:
                 print("  " + item.decode())
             answer = input("Really delete from oldfiles? [Y/n]: ")
             if answer.lower() not in ["", "y", "yes"]:
                 sys.exit()
-    finally:
-        tpath.unlink()
-
-    try:
-        backup = str(shada_path) + ".old"
+        backup = shada_path.parent / (shada_path.name + ".old")
         print(f"Shada backup: {backup}")
         shutil.move(shada_path, backup)
-        text_to_shada(filtered, shada_path)
-        print("Completed.")
+        shutil.move(tmp.name, shada_path)
+        have_to_delete_tmp = False
+        print("Done")
     finally:
-        if filtered:
-            filtered.unlink()
+        if have_to_delete_tmp:
+            os.unlink(tmp.name)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,15 @@
 # What is this for?
 
-I frequently use `oldfiles` feature of Neovim. But I noticed that some files such as deleted file remains in the `oldfiles` and I want to delete it.
+The `oldfiles` feature in NeoVim is a list of files you have recently opened and is commonly used in some plugins, such as:
+- `oldfiles` in [Telescope](https://github.com/nvim-telescope/telescope.nvim)
+- `oldfiles` in [fzf-lua](https://github.com/ibhagwan/fzf-lua)
+- `recent` in [Snacks.picker](https://github.com/folke/snacks.nvim)
 
-This script removes some items from `oldfiles` in Neovim by modifing the Shada file, which Neovim uses to fill `oldfiles` at startup.
+This `oldfiles` tracks all the opened files, so it may contain a lot of junks such as deleted files, and you might want to delete those.
+
+However, `oldfiles` is not easily modifiable because it is read from the ShaDa file when NeoVim starts, and removing from the `oldfiles` does not affect ShaDa file.
+
+This script modifies the ShaDa file, which is in MessagePack format, and removes the marks, jumps, and change history from it so that those are not included in `oldfiles`.
 
 # Features
 
@@ -10,15 +17,27 @@ This script removes some items from `oldfiles` in Neovim by modifing the Shada f
 - Remove from `oldfiles` using regular expressions.
 - Remove from `oldfiles` by selecting from the `fzf` command.
 
+# TIPS
+
+If you just want to ignore `/tmp/` file, you don't need this script. Add following to `shada` option.
+
+```lua
+vim.opt.shada:append({ "r/tmp/" })
+```
+
+Read `:help shada-r` for more detail.
+
+
 # Requirements
 
 - Neovim
 - Python >= 3.9
+- [msgpack](https://pypi.org/project/msgpack/) library >= 1.1.0
 - fzf (Optional)
 
 # Install
 
-This is a small Python script that only uses the standard library, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-cleaner.py) and run it.
+This is a small Python script that only uses only `msgpack` libarary, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-cleaner.py) and run it.
 
 # Usage
 
@@ -45,11 +64,9 @@ $./nvim-oldfiles-cleaner.py --fzf
 
 # Caveats
 
-- This script removes jumps, marks, and change history of the target from Shada file.
 - The original Shada file is backed up to `~/.local/state/nvim/shada/main.shada.old` before writing it. If something goes wrong, restore it from this location.
 - This script is only tested on Linux and macOS, so I don't know whether it works in Windows or not.
 
 # Open Problems
 
-- Using Neovim for reading/writing Shada files is quite slow. Can we speed it up using the msgpack library?
 - Can we write this script as pure Neovim plugin?
