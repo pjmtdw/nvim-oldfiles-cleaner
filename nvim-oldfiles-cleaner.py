@@ -81,22 +81,24 @@ class Entry:
             if packed := packb(item):
                 chunk.append(packed)
             else:
-                print(
-                    f"WARN: skipped some chunks: {self}",
-                    file=sys.stderr,
-                )
+                print(f"WARN: skipped some chunks: {self}")
                 chunk = []
                 break
         if chunk:
             fout.write(b"".join(chunk))
 
-    def have_to_filter(self) -> bool:
+    def affects_oldfiles(self) -> bool:
         # SHADA_ENTRY_NAMES from /usr/share/nvim/runtime/autoload/shada.vim
         # 7: 'global_mark'
         # 8: 'jump'
         # 10: 'local_mark'
         # 11: 'change'
         return self.typ in [7, 8, 10, 11]
+
+    def file_name(self) -> bytes:
+        # key "f" corresponds to file name
+        # SHADA_STANDARD_KEYS from /usr/share/nvim/runtime/autoload/shada.vim
+        return self.data["f"]
 
 
 def filter_oldfiles(
@@ -108,9 +110,8 @@ def filter_oldfiles(
         entry = Entry.from_iter(unpacker)
         if not entry:
             break
-        if entry.have_to_filter():
-            # "f" is file name: SHADA_STANDARD_KEYS from /usr/share/nvim/runtime/autoload/shada.vim
-            file_name = entry.data["f"]
+        if entry.affects_oldfiles():
+            file_name = entry.file_name()
             if any(pred(file_name) for pred in preds):
                 deleted.add(file_name)
                 continue
