@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import sys
-from argparse import ArgumentParser
+from argparse import ArgumentParser, BooleanOptionalAction, Namespace
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import PIPE, Popen, run
@@ -31,24 +31,25 @@ def get_shada_path() -> Path:
     return Path(res.stdout.decode()) / "shada" / "main.shada"
 
 
-def oldfiles_command(shada_path: Path) -> list[str]:
+def oldfiles_command(shada_path: Path, sort: bool) -> list[str]:
+    st = "table.sort(old);" if sort else ""
     return [
         "nvim",
         "-Es",
         "-c",
-        r"""lua io.stdout:write(vim.fn.join(vim.v.oldfiles,"\n").."\n")""",
+        rf"""lua local old=vim.v.oldfiles ; {st} io.stdout:write(vim.fn.join(old,"\n").."\n")""",
         "-i",
         str(shada_path),
     ]
 
 
-def list_oldfiles(shada_path: Path):
-    run(oldfiles_command(shada_path), check=True)
+def list_oldfiles(shada_path: Path, sort: bool):
+    run(oldfiles_command(shada_path, sort), check=True)
 
 
-def get_oldfiles_from_fzf(shada_path: Path) -> list[bytes]:
+def get_oldfiles_from_fzf(shada_path: Path, sort: bool) -> list[bytes]:
     p1 = Popen(
-        oldfiles_command(shada_path),
+        oldfiles_command(shada_path, sort),
         stdout=PIPE,
     )
     p2 = Popen(["fzf", "-m"], stdin=p1.stdout, stdout=PIPE)
@@ -119,8 +120,18 @@ def filter_oldfiles(
     return deleted
 
 
-def argument_parser() -> ArgumentParser:
-    argp = ArgumentParser(description="delete items from Neovim oldfiles")
+class MyNamespace(Namespace):
+    gone: bool
+    yes: bool
+    fzf: bool
+    sort: bool
+
+
+def gen_argp() -> ArgumentParser:
+    argp = ArgumentParser(
+        description="delete items from Neovim oldfiles",
+        epilog="You can also provide the items you want to delete using stdin. e.g. nvim-oldfiles-cleaner -l | grep hoo | nvim-oldfiles-cleaner",
+    )
     argp.add_argument("-l", "--list", action="store_true", help="list oldfiles")
     argp.add_argument(
         "-g",
@@ -132,10 +143,16 @@ def argument_parser() -> ArgumentParser:
         "-y", "--yes", action="store_true", help="do not confirm before deleting"
     )
     argp.add_argument(
-        "-f",
         "--fzf",
         action="store_true",
         help="delete oldfiles using fzf command. You can choose multiple items using TAB key.",
+    )
+    argp.add_argument(
+        "-s",
+        "--sort",
+        action=BooleanOptionalAction,
+        default=True,
+        help="sort output of --list and --fzf options",
     )
     argp.add_argument(
         "PATTERNS",
@@ -145,16 +162,12 @@ def argument_parser() -> ArgumentParser:
     return argp
 
 
-def main():
-    argp = argument_parser()
-    if len(sys.argv) == 1:
-        argp.print_help()
-        sys.exit()
-    args = argp.parse_args()
-    shada_path = get_shada_path()
+def gen_preds(
+    stdins: list[bytes], shada_path: Path, args: MyNamespace
+) -> list[Callable[[bytes], bool]]:
     preds = []
     if args.list:
-        list_oldfiles(shada_path)
+        list_oldfiles(shada_path, args.sort)
         sys.exit()
     if args.gone:
         preds.append(lambda x: not Path(x.decode()).exists())
@@ -162,10 +175,28 @@ def main():
         p = re.compile(pat)
         preds.append(lambda x, p=p: p.search(x.decode()))
     if args.fzf:
-        files = get_oldfiles_from_fzf(shada_path)
+        files = get_oldfiles_from_fzf(shada_path, args.sort)
         if not files:
             sys.exit()
         preds.append(lambda x: x in files)
+    if stdins:
+        preds.append(lambda x: x in stdins)
+
+    return preds
+
+
+def main():
+    argp = gen_argp()
+    isatty = sys.stdin.isatty()
+    if isatty and len(sys.argv) == 1:
+        argp.print_help()
+        sys.exit()
+    stdins = [] if isatty else [x.rstrip().encode() for x in sys.stdin]
+
+    args = argp.parse_args(namespace=MyNamespace())
+    shada_path = get_shada_path()
+    preds = gen_preds(stdins, shada_path, args)
+
     tmp = NamedTemporaryFile(delete=False, prefix="nvim-oldfiles-cleaner.")
     tmp.close()
     have_to_delete_tmp = True
@@ -176,7 +207,7 @@ def main():
         if not deleted:
             print("Nothing to delete.")
             sys.exit()
-        if args.yes:
+        if args.yes or not isatty:
             for item in deleted:
                 print("Deleting: " + item.decode())
         else:

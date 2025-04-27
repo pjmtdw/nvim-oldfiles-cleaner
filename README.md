@@ -5,7 +5,7 @@ The `oldfiles` feature in NeoVim is a list of files you have recently opened and
 - `oldfiles` in [fzf-lua](https://github.com/ibhagwan/fzf-lua)
 - `recent` in [Snacks.picker](https://github.com/folke/snacks.nvim)
 
-This `oldfiles` tracks all the opened files, so it may contain a lot of junks such as deleted files, and you might want to delete those.
+Since `oldfiles` tracks all the opened files, it may contain a lot of junks such as deleted files.
 
 However, `oldfiles` is not easily modifiable because it is read from the ShaDa file when NeoVim starts, and removing from the `oldfiles` does not affect ShaDa file.
 
@@ -37,7 +37,7 @@ Read `:help shada-r` for more detail.
 
 # Install
 
-This is a small Python script that only uses only `msgpack` libarary, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-cleaner.py) and run it.
+This is a small Python script that only uses only `msgpack` library, so just download [nvim-oldfiles-cleaner.py](./nvim-oldfiles-cleaner.py) and run it.
 
 # Usage
 
@@ -59,7 +59,13 @@ $ ./nvim-oldfiles-cleaner.py '^/tmp/' '\.bak$'
 
 Remove oldfiles by selecting from the `fzf` command.
 ```bash
-$./nvim-oldfiles-cleaner.py --fzf
+$ ./nvim-oldfiles-cleaner.py --fzf
+```
+
+When you provide items from `stdin`, those are also deleted. Therefore, the above is mostly equivalent to:
+
+```bash
+$ ./nvim-oldfiles-cleaner.py -l | fzf -m | ./nvim-oldfiles-cleaner.py
 ```
 
 # Caveats
